@@ -1,0 +1,8 @@
+"""This project is a research and application project : "Volatility Regime Prediction in Indian Markets".
+Features like bid ask spread, realised volatility, tick volume and order flow, moving averages, garman klass and so on will be engineered or gathered.  
+Data will be ingested from preferably yfinance api or otherwise for detailed NIFTY 50 data (maybe nse website), then using Hidden Markov Models (HMM), Gaussian Mixture Models, and GARCH (three separate pipelines if required) the data will be clustered into Chaotic, Normal and Quiet. 
+Then models such as Random Forest, XGBoost, Adaboost, LightGBM, LSTM, GRU, etc will be trained and tested (each having a separate folder/notebook).
+Then there will be an ensemble lab (folder) where various models will be ensembled. There will also be a lab (folder) where other ideas may be experimented on. The notebooks are .ipynb format and will be connected to google colab for GPU resources.
+Write a docs that provide specification of requirements, objectives, SOP, expected results, experimental ideas, specification of results (accuracy, recall, F1, etc) and how they are benchmarked against a standard. Also write a doc on what interesting data points such as corporate filings, rbi announcements could be of use in training or inference or detection (ofcourse if there is a known rbi change or corporate filing there will be massive changes to foresee). 
+Feel free to criticize, differ in opinion or provide suggestions at any point. 
+"""
