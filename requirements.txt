@@ -5,6 +5,7 @@ scipy
 scikit-learn
 hmmlearn  # labeler fitting (Colab); not needed by the live app
 arch
+lightgbm
 matplotlib
 yfinance
 # Angel One SmartAPI (local data ingestion / live app)
