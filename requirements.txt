@@ -1,0 +1,14 @@
+numpy
+pandas
+pyarrow
+scipy
+scikit-learn
+hmmlearn  # labeler fitting (Colab); not needed by the live app
+arch
+matplotlib
+yfinance
+# Angel One SmartAPI (local data ingestion / live app)
+smartapi-python
+pyotp
+logzero
+websocket-client

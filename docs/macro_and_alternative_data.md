@@ -30,6 +30,11 @@ Indian markets do not operate in a vacuum; they are highly sensitive to global l
 *   **Put-Call Ratio (PCR):** An extreme PCR (too high = fearful/hedged, too low = overly greedy) indicates an overextended market prone to sharp, chaotic mean reversions.
 
 ## 6. How to Integrate into Training & Inference
+**Role in a real-time regime classifier:** the system classifies the *current* regime, so these data points serve two purposes:
+*   **Scheduled events** (RBI MPC, FOMC, CPI/NFP, Union Budget, heavyweight earnings, election results) are known in advance. They can be used as causal features that raise the prior probability of Chaotic around the event, letting the classifier react faster when the move arrives. They can also drive a pre-emptive "event risk" banner on the dashboard independent of the model.
+*   **Unscheduled events** (surprise interventions, geopolitical shocks) cannot be anticipated. They show up through fast-reacting inputs (India VIX jumps, USD/INR and crude moves) and are mainly useful for *validating* that the labelers mark them Chaotic.
+*   **Data timing caveat:** FII/DII flows are published after market close, so for intraday bars only the previous day's figures may be used. The same applies to any end-of-day series.
+
 *   **Event Flags:** The simplest method is adding boolean columns (0 or 1) for `is_event_day`.
 *   **Decay Features:** Instead of a binary flag, use an exponential decay feature (e.g., spikes to 1.0 on the event day and decays to 0 over the next 3-5 days) to model the lingering psychological effects of a macro shock.
 *   **Validating Clustering:** You can use these dates to validate your unsupervised clustering models. If your HMM correctly assigns "Chaotic" labels to historical RBI surprise rate hike days or COVID-19 lockdown announcement days, it proves the clustering logic is sound.
