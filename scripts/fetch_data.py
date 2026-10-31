@@ -1,22 +1,18 @@
 """Stage 01 (local): download NIFTY 50 / India VIX candles from Angel One SmartAPI
 and cross-asset daily series from yfinance, archived as parquet.
 
-Runs on the local machine (broker APIs are unreliable from Colab's cloud IPs).
-The parquet files are then uploaded to Google Drive for the Colab notebooks.
-
-Setup:
-    python -m venv .venv
+Setup (Python 3.13; hmmlearn has no 3.14 wheel yet):
+    pip install uv
+    uv venv .venv --python 3.13   (uv downloads Python 3.13 if it is not installed)
     .venv\\Scripts\\activate
-    pip install smartapi-python pyotp logzero websocket-client yfinance pandas pyarrow
+    uv pip install -r requirements.txt
     copy .env.example .env   (then fill in your credentials)
 
 Usage:
     python scripts/fetch_data.py
-    python scripts/fetch_data.py --out "G:/My Drive/vrdet/data/raw"   # Google Drive for desktop
     python scripts/fetch_data.py --intervals FIFTEEN_MINUTE ONE_DAY --skip-yf
 """
 import argparse
-import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,9 +23,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
+from vrdet.angel import TOKENS, clean_intraday, load_env, login, request_candles, to_frame  # noqa: E402
 from vrdet.quality import session_report, yearly_summary  # noqa: E402
-
-TOKENS = {'NIFTY': '99926000', 'INDIAVIX': '99926017'}
 
 # Max days per historical request for each interval (SmartAPI limits)
 MAX_DAYS = {'ONE_MINUTE': 30, 'FIVE_MINUTE': 100, 'FIFTEEN_MINUTE': 200,
@@ -42,76 +37,19 @@ INTERVALS = {'ONE_MINUTE': ('1m', 375), 'FIVE_MINUTE': ('5m', 75), 'FIFTEEN_MINU
 YF_TICKERS = {'USDINR': 'USDINR=X', 'BRENT': 'BZ=F', 'NIFTY_YF': '^NSEI'}
 
 
-def load_env(path=ROOT / '.env'):
-    if path.exists():
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
-
-
-def login():
-    import pyotp
-    from SmartApi import SmartConnect
-
-    smart = SmartConnect(api_key=os.environ['ANGEL_API_KEY'])
-    session = smart.generateSession(os.environ['ANGEL_CLIENT_CODE'], os.environ['ANGEL_PIN'],
-                                    pyotp.TOTP(os.environ['ANGEL_TOTP_SECRET']).now())
-    if not session.get('status'):
-        raise SystemExit(f'Login failed: {session}')
-    print('Logged in as', session['data'].get('name', os.environ['ANGEL_CLIENT_CODE']))
-    return smart
-
-
-def _request(smart, token, interval, start, end, retries=5):
-    params = {'exchange': 'NSE', 'symboltoken': token, 'interval': interval,
-              'fromdate': start.strftime('%Y-%m-%d %H:%M'),
-              'todate': end.strftime('%Y-%m-%d %H:%M')}
-    msg = ''
-    for attempt in range(retries):
-        try:
-            resp = smart.getCandleData(params)
-            if resp and resp.get('status'):
-                return resp.get('data') or []
-            msg = (resp or {}).get('message', '')
-        except Exception as e:
-            msg = str(e)
-        time.sleep(1.5 * (attempt + 1))
-    print(f'  giving up on {params["fromdate"]} -> {params["todate"]}: {msg}')
-    return []
-
-
 def fetch_history(smart, name, interval, floor=datetime(2010, 1, 1), max_empty=2):
     """Walk backwards from today in max-size chunks until history runs out."""
     token, step = TOKENS[name], timedelta(days=MAX_DAYS[interval] - 1)
     end, rows, empty = datetime.now(), [], 0
     while end > floor and empty < max_empty:
         start = max(end - step, floor)
-        chunk = _request(smart, token, interval, start.replace(hour=9, minute=0), end.replace(hour=15, minute=30))
+        chunk = request_candles(smart, token, interval, start.replace(hour=9, minute=0), end.replace(hour=15, minute=30))
         empty = 0 if chunk else empty + 1
         rows.extend(chunk)
         print(f'  {start:%Y-%m-%d} -> {end:%Y-%m-%d}: {len(chunk)} bars')
         end = start - timedelta(days=1)
         time.sleep(0.4)
-    df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Asia/Kolkata')
-    return df.drop_duplicates('timestamp').sort_values('timestamp').set_index('timestamp')
-
-
-def clean_intraday(df):
-    t = df.index.time
-    keep = (t >= pd.Timestamp('09:15').time()) & (t < pd.Timestamp('15:30').time()) & (df.index.dayofweek < 5)
-    if (~keep).any():
-        dropped = df[~keep].groupby(df[~keep].index.date).size()
-        print(f'  dropping {(~keep).sum()} bars outside the regular session on {len(dropped)} dates '
-              f'(special/extended sessions): {", ".join(str(d) for d in dropped.index[:10])}'
-              f'{" ..." if len(dropped) > 10 else ""}')
-    df = df[keep]
-    bad = (df['high'] < df[['open', 'close']].max(axis=1)) | (df['low'] > df[['open', 'close']].min(axis=1))
-    if bad.any():
-        print(f'  dropping {bad.sum()} bars with inconsistent OHLC')
-    return df[~bad]
+    return to_frame(rows)
 
 
 def quality_report(df, name, bars_per_day=None):

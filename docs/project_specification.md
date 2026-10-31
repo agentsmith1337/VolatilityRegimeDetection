@@ -20,10 +20,8 @@ Retail intraday traders in India take heavy losses from sudden volatility spikes
 *   **Target Asset:** NIFTY 50 Index (`^NSEI`).
 *   **Primary Bar Frequency:** 15 minutes (25 bars per session). 5-minute and 1-hour bars are used for robustness checks.
 *   **Supporting Series:** India VIX (intraday, via Angel One), USD/INR and Brent crude (daily, via yfinance).
-*   **Compute Environment:**
-    *   **Local machine:** data ingestion (`scripts/fetch_data.py`) and later the live app. Broker APIs are unreliable from Colab's shared cloud IPs.
-    *   **Google Colab:** research notebooks (labeling, training; GPU for LSTM/GRU), reading the parquet archive from Google Drive (`MyDrive/vrdet/data/raw/`).
-*   **Programming Language:** Python 3.10+
+*   **Compute Environment:** everything runs on the local machine (Windows, 16 threads, no CUDA GPU): data ingestion (`scripts/fetch_data.py`), research notebooks, training and the live app. Data lives in `data/raw/` (gitignored). LSTM/GRU models are small enough to train on the CPU build of PyTorch. (Colab was used earlier but dropped: round-tripping data through Drive was slower than running locally, and broker APIs are unreliable from Colab's shared cloud IPs anyway.)
+*   **Programming Language:** Python 3.13 in `.venv` (`uv venv .venv --python 3.13`, then `uv pip install -r requirements.txt`). Not 3.14: `hmmlearn` has no 3.14 wheel and building it needs the MSVC compiler. Notebooks use the Jupyter kernel `vrdet (Python 3.13)`.
 *   **Primary Libraries:** `pandas`, `numpy`, `scikit-learn`, `xgboost`, `lightgbm`, `hmmlearn`, `arch`, `pytorch` or `tensorflow`, `streamlit`, `smartapi-python`, `pyotp`, `python-telegram-bot` (or plain HTTP calls to the Bot API).
 *   **Data Sources:**
     | Source | Used for | Notes |
@@ -85,6 +83,21 @@ Supervised models mapping causal features at bar *t* to the hindsight label of b
 *   **Ensembles:** soft/hard voting, stacking, blending of the best base models.
 *   Class imbalance is handled with class weights and threshold tuning on the Chaotic probability, not by blind oversampling.
 
+**Implemented model zoo** (`src/vrdet/zoo.py`, trained by `scripts/train_zoo.py`), 22 models:
+*   **Gradient boosting:** LightGBM (production), XGBoost, CatBoost, scikit-learn histogram gradient boosting; **boosting:** AdaBoost.
+*   **Bagging / trees:** Random Forest, Extra Trees, a single depth-6 decision tree.
+*   **Linear and probabilistic:** logistic regression, LDA (shrinkage), QDA (regularised), Gaussian naive Bayes (normal-score inputs).
+*   **Kernel and instance-based:** RBF SVM (500-landmark Nyström approximation, sigmoid-calibrated), k-NN (k = 100).
+*   **Neural:** MLP; sequence models over 16-bar windows: LSTM, GRU, Transformer, temporal CNN (dilated causal convolutions).
+*   **Ordinal:** Frank & Hall ordinal LightGBM (P(above Quiet), P(above Normal)), which uses the order Quiet < Normal < Chaotic.
+*   **Ensembles:** soft voting (LightGBM + XGBoost + RF) and stacking (logistic meta-model on LightGBM, XGBoost and logistic probabilities, fitted on a held-out year).
+
+All use the same 56 inputs (causal features + HMM filter probabilities), the same τ tuning and the same walk-forward protocol as Stage 03; results go to `data/processed/zoo_results.csv`, out-of-sample predictions to `data/processed/zoo/`, frozen models to `models/zoo/` (gitignored, regenerable). Training runs one model at a time and skips models already trained.
+
+Walk-forward results (macro-F1, HMM filter benchmark 0.807): 20 of 22 models beat the benchmark, and the top 13 lie within 0.012 of each other (soft voting 0.840, XGBoost 0.838, logistic 0.836, CatBoost 0.835, RF 0.833, SVM 0.831, …, production LightGBM 0.829 with the fewest false alarms, 0.48/week). Model choice matters much less than the inputs and labels. The only models below the benchmark are QDA (0.761; one covariance matrix per regime is too many parameters for the rare Chaotic class) and AdaBoost (0.780; highest recall, but 1.68 false alarms/week). The sequence models (temporal CNN 0.824, Transformer 0.820, LSTM / GRU 0.808) do not beat the per-bar models; see the learning curves below.
+
+**Learning curves** (`scripts/learning_curve.py`, test fixed on 2025–26, training on the preceding 0.5–8 years, 3 seeds for networks): tree models reach PR-AUC(Chaotic) ≈ 0.77 with one year of data (33 Chaotic episodes) and change little after; GRU (15k parameters) and Transformer (42k) are below them at every size but still improving at 8 years (Transformer 0.59 → 0.76 vs XGBoost 0.73 → 0.82). Logistic regression (171 parameters) matches XGBoost on macro-F1 from 4 years on. Reading: the binding constraint is the number of Chaotic episodes (226 in 8 years), not the number of bars; with the available history, small models are the right choice, and deep sequence models would need far more episodes to catch up, if they can.
+
 ### 3.5 Validation Protocol
 *   **Walk-forward (expanding-window) splits only.** No random shuffling.
 *   Purge/embargo a gap of several bars between train and test so rolling-window features do not overlap.
@@ -95,20 +108,35 @@ Supervised models mapping causal features at bar *t* to the hindsight label of b
 *   **Alerting:** fires on transition into Chaotic (with hysteresis/cooldown so it does not spam), via a Telegram bot. Users subscribe by messaging the bot.
 *   **Inference loop:** on each new bar, fetch → features → classify → update dashboard → alert if needed.
 
+**Implemented** (runs only on the local machine; nothing is hosted):
+*   **Production model:** "LightGBM + HMM" (best walk-forward macro-F1 in Stage 03), retrained on all labelled bars 2017 → latest by `scripts/train_live_model.py`; τ = 0.30 tuned on the last training year. Frozen as `models/live_lgbm.txt` + `models/live_model.json`, with the HMM in `models/hmm_labeler.json`.
+*   **Runner** (`app/runner.py`): at every bar close + 45 s (09:30 … 15:30 IST) it fetches new NIFTY / India VIX candles from Angel One (cached in `data/live/`), keeps completed bars only, rebuilds the features with `vrdet.live.model_frame` (the same function used for training), scores the model and writes `state.json` / `history.parquet` for the dashboard. One cycle takes ~12 s, mostly the feature rebuild over the full archive.
+*   **Causality check:** the data was cut at bar *t* for several bars (first bar of a session, mid-session, 2024-06-04, 2025-04-07), and live-mode predictions at *t* equal the full-history predictions exactly (max difference 0.0). So the app computes what was evaluated in Stage 03.
+*   **Alerts:** one alert on entering Chaotic, one "all clear" after 4 consecutive non-Chaotic bars (hysteresis). Telegram is optional and private: only chat ids in `.env`, or users who send `/start <code>`. Alerts are also listed on the dashboard (with a toast).
+*   **Dashboard** (`app/dashboard.py`, bound to 127.0.0.1, usage stats off): regime card, P(Chaotic), confidence, NIFTY and India VIX, price chart shaded by regime, P(Chaotic) of the model vs the HMM filter with the alarm threshold, alert log, and a sensitivity setting (τ = 0.20 / tuned / 0.50) shared with the runner.
+*   **Model Lab** (dashboard page): leaderboard of walk-forward results, and one card per model with a Play button that scores the latest bars (from `data/live/features.parquet`, written by the runner) with that model. Runs go through a single-worker queue, so models never run simultaneously; "Play all" queues every model. Each card shows the model's current call, its regime-shaded chart and its agreement with the production model and with the hindsight labels; a strip chart compares all models bar by bar under a top row of hindsight labels ("HMM smoothing (truth)", marked provisional for the latest bars because smoothing uses later bars). The Risk Radar and Stock Lab show the same truth row and match rates.
+*   **Stock Lab** (dashboard page, or `python scripts/train_stock.py <SYMBOL>`): the same pipeline for any of ~2,700 NSE equities in Angel One's instrument list. One click downloads (and caches) 15-minute and daily candles from Angel One (history from 2017; yfinance as daily fallback), validates sessions, fits a per-stock HMM labeler on the training years only, trains the selected zoo models, tests them on the last 6–24 months, refits on all data and shows each model's current regime. The log streams to a console panel and the terminal. Runs on the same single background worker as the Model Lab. Stock-specific data issue found and handled: Angel One adjusts its intraday and daily archives differently for some corporate actions (RELIANCE intraday before 2022-01-05 is ×1.10 the daily series, a fake −9.5% overnight jump); intraday sessions are rescaled to the official daily level where the two differ by a steady factor (`vrdet.stocks.align_to_daily`), which took RELIANCE from 60% to 99.9% valid sessions.
+*   **Replay mode** (`python app/run.py --replay 2025-04-07`): replays a past session bar by bar through the same pipeline into `data/replay/`, for demos when the market is closed or calm.
+
 ## 4. Project Structure
 | Path | Content |
 |---|---|
 | `scripts/fetch_data.py` | Local data ingestion (Angel One + yfinance) → `data/raw/*.parquet` |
-| `src/vrdet/` | Shared package: `data.py` (loading), `features.py` (causal features, VIX cleaning), `labels.py` (HMM/GMM/GARCH labelers, live filter, event checks) |
+| `scripts/train_live_model.py` | Trains and freezes the production model for the app |
+| `src/vrdet/` | Shared package: `data.py` (loading), `quality.py` (session validation), `features.py` (causal features, VIX cleaning), `labels.py` (HMM/GMM/GARCH labelers, live filter, event checks), `classifiers.py`, `evaluate.py`, `angel.py` (SmartAPI login / candles), `live.py` (live data + frozen model), `alerts.py` (hysteresis, Telegram) |
 | `main.ipynb` | Stage 01: load and inspect raw data |
-| `notebooks/02_features_and_labels.ipynb` | Stages 02–03: features, labelers, sanity checks, label comparison |
-| `notebooks/04_*.ipynb` | Baselines and classifiers (one notebook per model family) |
-| `notebooks/05_ensemble_lab.ipynb` | Voting, stacking, blending |
-| `notebooks/06_experimental_lab.ipynb` | Next-bar Chaotic probability, alternative data, etc. |
-| `app/` | Streamlit dashboard, inference loop, Telegram alerts |
-| `models/` | Small fitted artefacts committed to git (e.g. `hmm_labeler.json`) |
+| `notebooks/01_data_fetch_and_cleaning.ipynb` | Stage 01: Angel One / yfinance download step by step, check against the archive, session filter, validation vs official daily candles, vendor defects (VIX scale, closing candle, stock level adjustment) |
+| `notebooks/02_features_and_labels.ipynb` | Stages 02–03: features, labelers, sanity checks, label comparison (HMM vs GMM vs GARCH) |
+| `notebooks/03_classifier.ipynb` | Stage 03: first classifier walk-forward, threshold trade-off, case studies, feature importance |
+| `notebooks/04_hmm_models.ipynb` | HMM in depth: number of states, parameters, filtered / smoothed / Viterbi decoding, sticky prior and minimum duration, label stability, HMM filter benchmark (argmax and tuned τ), per-stock HMMs |
+| `notebooks/05_model_zoo.ipynb` | All 22 classifiers: train 2017–2024 / test 2025–26, recall vs false alarms, model agreement, case study, walk-forward 2022–26 with block-bootstrap intervals and per-year scores |
+| `scripts/train_stock.py` | Stock Lab pipeline from the command line (train/test on one NSE stock, or `--update`) |
+| `scripts/train_zoo.py` | Walk-forward test and freezing of every model in the zoo (Stage 04) |
+| `scripts/learning_curve.py` | Learning curves (training size vs test score) |
+| `app/` | `runner.py` (live inference loop + alerts), `dashboard.py` (Streamlit), `run.py` (starts both) |
+| `models/` | Fitted artefacts committed to git: `hmm_labeler.json`, `live_lgbm.txt`, `live_model.json` |
 
-Notebooks import `src/vrdet`. In Colab, the first cell clones this (public) GitHub repo and pulls the raw data from a Drive share link; data and credentials are never committed.
+Notebooks import `src/vrdet` (the first cell adds `src/` to `sys.path`) and read `data/raw/`, or `$VRDET_DATA` if set; data and credentials are never committed.
 
 ## 5. Evaluation Metrics
 **Classification quality** (against hindsight labels, on walk-forward test folds):
@@ -138,12 +166,10 @@ ML models must beat all of these on macro-F1 and detection delay to justify thei
 *   Task: real-time classification of the current regime; next-bar probability is experimental only.
 *   Alerts: Telegram bot (free); Twilio optional.
 *   Primary labeler: HMM (see 3.3 findings). Labeler training span 2015–2021.
-
-**Still open**
-*   Dashboard hosting (local vs Streamlit Community Cloud).
+*   Everything runs locally, including the dashboard (no Streamlit Community Cloud).
 
 **Work order** (deadline 2 Nov, flexible; full-time effort)
-1.  Data ingestion and Drive archive (Angel One + yfinance), data-quality checks.
+1.  Data ingestion and local parquet archive (Angel One + yfinance), data-quality checks.
 2.  Causal features and exploratory analysis (intraday volatility seasonality, VIX relationship).
 3.  HMM labeling (hindsight vs filtered), event sanity checks; then GMM and GARCH pipelines.
 4.  Baselines, then LightGBM / XGBoost with walk-forward validation.
@@ -154,7 +180,7 @@ ML models must beat all of these on macro-F1 and detection delay to justify thei
 ## 8. Risks & Criticism
 *   **Circularity:** if labels come from realized volatility and the classifier is fed realized volatility over the same window, it will trivially relearn the labeling rule. The design avoids this by labeling with *hindsight decoding* and requiring the classifier to work *causally*. The causal HMM filter benchmark measures whether ML adds anything.
 *   **Few Chaotic episodes:** even with years of 15-minute bars, the number of distinct Chaotic *episodes* is small (dozens), and consecutive bars are highly correlated. Report episode-level metrics, use strong regularization, and do not trust bar-level scores alone.
-*   **API dependence:** Angel One rate limits, session expiry and occasional missing candles must be handled (chunking, retries, gap checks). The archive on Drive means research never depends on re-downloading.
+*   **API dependence:** Angel One rate limits, session expiry and occasional missing candles must be handled (chunking, retries, gap checks). The local parquet archive means research never depends on re-downloading.
 *   **Label instability:** HMM/GMM state assignments can change between refits. Order states by volatility and check stability across refits.
 *   **Regime flicker:** raw per-bar labels can oscillate. Use minimum-duration smoothing for labels and hysteresis for alerts.
 *   **Data quality:** yfinance intraday data can have gaps, delayed bars and timezone quirks. Validate every download before appending to the archive.

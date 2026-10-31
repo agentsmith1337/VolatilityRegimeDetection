@@ -3,11 +3,20 @@ pandas
 pyarrow
 scipy
 scikit-learn
-hmmlearn  # labeler fitting (Colab); not needed by the live app
+hmmlearn  # labeler fitting; not needed by the live app (no Python 3.14 wheel yet, use 3.13)
 arch
 lightgbm
+xgboost
+catboost
+torch  # LSTM / GRU (CPU build is enough)
 matplotlib
 yfinance
+# Notebooks, run locally (VS Code / Jupyter)
+ipykernel
+nbconvert
+# Live app (local only)
+streamlit
+requests
 # Angel One SmartAPI (local data ingestion / live app)
 smartapi-python
 pyotp

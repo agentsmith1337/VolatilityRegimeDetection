@@ -1,0 +1,12 @@
+# Local only: the dashboard is served on this machine and nothing is sent to Streamlit.
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = true
+
+[browser]
+serverAddress = "localhost"
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"

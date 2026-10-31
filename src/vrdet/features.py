@@ -40,7 +40,7 @@ def _prev_day_lookup(daily, dates):
 
 
 def build_features(nifty, vix=None, daily=None, nifty_daily=None, vix_daily=None, bars_per_day=25,
-                   windows=(4, 8, 25, 125)):
+                   windows=(4, 8, 25, 125), live=False):
     """Feature frame indexed by the valid sessions of `nifty`.
 
     nifty, vix: intraday OHLC frames (tz-aware index). nifty_daily, vix_daily: official daily OHLC
@@ -48,16 +48,24 @@ def build_features(nifty, vix=None, daily=None, nifty_daily=None, vix_daily=None
     invalid VIX sessions are set to NaN. vix_daily is required when vix is given.
     daily: optional dict name -> daily frame with a 'close' column and naive date index
     (e.g. {'usdinr': ..., 'brent': ...}). Volatility columns are annualised percentages.
+    live: the last session is in progress (partial, no official daily candle yet), so it is kept
+    rather than validated.
     """
     from .quality import session_report, mask_invalid_sessions
 
+    def validate(intra, daily):
+        rep = session_report(intra, daily, bars_per_day)
+        if live:
+            rep.loc[rep.index[-1], 'valid'] = True
+        return rep
+
     if nifty_daily is not None:
-        rep = session_report(nifty, nifty_daily, bars_per_day)
+        rep = validate(nifty, nifty_daily)
         nifty = nifty[pd.Index(bar_dates(nifty.index)).isin(rep.index[rep['valid']])]
     if vix is not None:
         if vix_daily is None:
             raise ValueError('vix_daily is required to validate intraday VIX sessions')
-        vix = mask_invalid_sessions(vix, session_report(vix, vix_daily, bars_per_day))
+        vix = mask_invalid_sessions(vix, validate(vix, vix_daily))
 
     o, h, l, c = (nifty[k].astype(float) for k in ('open', 'high', 'low', 'close'))
     idx = nifty.index

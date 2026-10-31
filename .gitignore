@@ -1,9 +1,12 @@
 __pycache__/
 .ipynb_checkpoints/
-.venv/
+.venv*/
 .env
 *.parquet
 data/
 logs/
 vrdet_data/
 docs/
+models/zoo/
+models/stocks/
+catboost_info/

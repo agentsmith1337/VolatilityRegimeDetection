@@ -18,7 +18,9 @@ from vrdet.zoo import MODELS
 FAST = ['lightgbm', 'xgboost', 'logistic', 'soft_vote']
 # rough seconds per model (test fit + final fit) on 8 years of 15-minute bars, for the time estimate
 COST = {'lightgbm': 15, 'logistic': 8, 'xgboost': 20, 'mlp': 60, 'extra_trees': 30, 'random_forest': 60,
-        'adaboost': 330, 'gru': 150, 'lstm': 150, 'transformer': 600, 'soft_vote': 75, 'stacking': 120}
+        'adaboost': 330, 'gru': 150, 'lstm': 150, 'transformer': 600, 'soft_vote': 75, 'stacking': 120,
+        'catboost': 60, 'hist_gb': 20, 'decision_tree': 4, 'knn': 15, 'naive_bayes': 4, 'lda': 3, 'qda': 3,
+        'svm': 25, 'tcn': 100, 'ordinal': 10}
 NAMES = {k: v[0] for k, v in MODELS.items()} | {'hmm_filter': 'HMM filter (benchmark)'}
 
 
@@ -164,7 +166,7 @@ def render():
         test_months = d.select_slider('Test period (months)', [6, 12, 18, 24], 12)
         est = 30 + sum(COST[k] for k in models) * years / 8
         e.caption(f'Estimated time: about {est / 60:.0f} min' if est > 90 else f'Estimated time: about {est:.0f} s')
-        e.caption('Sequence models (GRU, LSTM, Transformer) and AdaBoost are slow; the defaults take about 2 minutes.')
+        e.caption('Sequence models (GRU, LSTM, Transformer, temporal CNN) and AdaBoost are slow; the defaults take about 2 minutes.')
         job = jobs().get(symbol)
         busy = job is not None and job['status'] in ('queued', 'running')
         trained = (MODELS_DIR / safe(symbol) / 'meta.json').exists()

@@ -19,6 +19,11 @@ def runs(mask):
     return list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
 
 
+def regime_episodes_count(labels, state=CHAOTIC):
+    """Number of contiguous runs of `state`."""
+    return len(runs(np.asarray(labels) == state))
+
+
 def regime_metrics(y_true, y_pred, state=CHAOTIC):
     y_true, y_pred = y_true.align(y_pred, join='inner')
     t, p = y_true.to_numpy().astype(int), y_pred.to_numpy().astype(int)

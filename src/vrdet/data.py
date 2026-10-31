@@ -8,8 +8,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def find_raw_dir():
-    """First existing candidate: $VRDET_DATA, <repo>/data/raw, Colab download dir."""
-    candidates = [os.environ.get('VRDET_DATA'), REPO_ROOT / 'data' / 'raw', '/content/vrdet_data/raw']
+    """First existing candidate: $VRDET_DATA, <repo>/data/raw."""
+    candidates = [os.environ.get('VRDET_DATA'), REPO_ROOT / 'data' / 'raw']
     for c in candidates:
         if c and Path(c).exists() and any(Path(c).rglob('*.parquet')):
             return Path(c)
