@@ -13,6 +13,7 @@ Usage:
     python app/runner.py                          # loop forever
     python app/runner.py --once                   # one update now, then exit
     python app/runner.py --replay 2025-04-07      # replay a session, one bar every 4 s
+    python app/runner.py --no-stream              # without the live tick stream (ticker)
 """
 import argparse
 import json
@@ -20,6 +21,7 @@ import logging
 import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from vrdet.angel import load_env, login  # noqa: E402
 from vrdet.data import load_raw  # noqa: E402
 from vrdet.labels import STATE_NAMES  # noqa: E402
 from vrdet.live import BAR, LIVE_DIR, TZ, LiveData, RegimeModel, classify, model_frame  # noqa: E402
+from vrdet.stream import TickStream  # noqa: E402
 from vrdet.zoo import CONTEXT  # noqa: E402
 
 REPLAY_DIR = ROOT / 'data' / 'replay'
@@ -85,6 +88,7 @@ class Runner:
         self.model = RegimeModel()
         self.data = LiveData(load_raw())
         self.smart = None
+        self.login_lock = threading.Lock()   # the tick stream thread shares the session
         s = read_json(self.dir / 'alert_state.json', None)
         self.alerts = AlertState(**s) if s else AlertState()
         token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip() if telegram else ''
@@ -99,12 +103,17 @@ class Runner:
         """Alert threshold: the dashboard's sensitivity setting, else the tuned value."""
         return float(read_json(LIVE_DIR / 'settings.json', {}).get('tau', self.model.tau))
 
+    def session(self, fresh=False):
+        """The Angel One session shared by candle fetches and the tick stream; fresh=True logs in again."""
+        with self.login_lock:
+            if fresh or self.smart is None:
+                self.smart = login()
+            return self.smart
+
     def fetch(self, now):
         for attempt in range(2):
             try:
-                if self.smart is None:
-                    self.smart = login()
-                self.data.refresh_angel(self.smart, now)
+                self.data.refresh_angel(self.session(), now)
                 return
             except Exception as e:  # expired session or network error: log in again once
                 log.warning('Angel One fetch failed (%s), re-login', e)
@@ -235,6 +244,7 @@ def main():
     parser.add_argument('--once', action='store_true', help='run one update and exit')
     parser.add_argument('--replay', metavar='YYYY-MM-DD', help='replay a past session into data/replay')
     parser.add_argument('--pause', type=float, default=4.0, help='seconds per bar in replay mode')
+    parser.add_argument('--no-stream', action='store_true', help='do not stream live ticks for the ticker')
     args = parser.parse_args()
     (ROOT / 'logs').mkdir(exist_ok=True)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
@@ -244,6 +254,8 @@ def main():
         replay(args.replay, args.pause)
         return
     runner = Runner()
+    if not (args.once or args.no_stream):
+        TickStream(runner.session).start()   # live NIFTY 50 / India VIX ticks for the dashboard ticker
     runner.cycle()
     while not args.once:
         runner.idle(next_run(pd.Timestamp.now(tz=TZ)))

@@ -10,3 +10,6 @@ docs/
 models/zoo/
 models/stocks/
 catboost_info/
+
+# Large archives (exceed GitHub 100MB limit)
+*.zip
